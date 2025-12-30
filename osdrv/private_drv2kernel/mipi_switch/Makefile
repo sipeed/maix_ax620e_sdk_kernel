@@ -1,0 +1,1 @@
+obj-y += ax_mipi_switch.o

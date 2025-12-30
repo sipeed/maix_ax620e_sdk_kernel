@@ -1,0 +1,324 @@
+HOME_PATH  := $(abspath $(shell pwd)/../..)
+BUILD_PATH := $(HOME_PATH)/build
+TOOLS_PATH := $(HOME_PATH)/tools
+
+IMGSIGN_SCRIPT   := $(BUILD_PATH)/tools/imgsign
+AES_KEY          := aes-256.key
+SIGN_USE_RSA3072 ?= FALSE
+
+include $(BUILD_PATH)/color.mk
+include $(BUILD_PATH)/config.mak
+
+.PHONY: all prepare linux dtbs install install_dtb clean clean_dtb install_prvdrv
+.NOTPARALLEL: prepare clean install install_prvdrv
+
+ifneq ($(MAKECMDGOALS),plist)
+ifneq ($(MAKECMDGOALS),scan)
+ifeq ($(KERNEL_DIR),)
+$(error "error: KERNEL_DIR is not set")
+endif
+endif
+endif
+
+CONFIG      := axera_$(PROJECT)_defconfig
+
+ifeq ($(PROJECT), AX620E_zebu)
+CONFIG := axera_AX620E_haps_defconfig
+endif
+
+AXERA_SCRIPT_PATH    := $(KERNEL_DIR)/scripts/axera
+PATCH_KCONFIG_SCRIPT := $(AXERA_SCRIPT_PATH)/patch_defconfig.py
+DEF_PATCH_FILES      :=
+DTS_RESERVE_MEM_FILE := AX620E_reserve_mem_define.h
+DTS_RESERVE_MEM_PATH := $(KERNEL_DIR)/include/dt-bindings/memory
+OBJ_OUT_DIR          := $(BUILD_PATH)/out/$(PROJECT)/objs
+SRC_PRVDRV_OBJ_PATH  := $(OSDRV_OUT_PATH)/prvdrv
+DST_PRVDRV_OBJ_PATH  := $(OBJ_OUT_DIR)/kernel/osdrv/private_drv2kernel
+
+ATF_RES_START := $(ATF_IMG_ADDR)
+ATF_RES_SIZE  := $(ATF_IMG_PKG_SIZE)
+PATCH_RESERVE_MEM_SCRIPT := $(AXERA_SCRIPT_PATH)/patch_reserve_mem.sh
+IS_ATF_FIRMWARE	:= ATF
+
+ifeq ($(strip $(AX_RISCV_LOAD_ROOTFS_SUPPORT)),TRUE)
+RAMDISK_HEADER_RES_START := $(RAMDISK_HEADER_RESERVE_START)
+RAMDISK_HEADER_RES_SIZE := $(RAMDISK_HEADER_RESERVE_SIZE)
+IS_RAMDISK_HEADER_FIRMWARE := RAMDISK_HEADER
+endif
+
+ifeq ($(strip $(AX_RISCV_LOAD_MODEL_SUPPORT)),TRUE)
+MODEL_DATA_RES_START := $(MODEL_DATA_RESERVE_START)
+MODEL_DATA_RES_SIZE := $(MODEL_DATA_RESERVE_SIZE)
+IS_MODEL_DATA_FIRMWARE := MODEL_DATA
+endif
+
+ifeq ($(strip $(AX_RISCV_SUPPORT)),TRUE)
+RISCV_RES_START := $(RISCV_BIN_DDR_START)
+RISCV_RES_SIZE  := $(RISCV_MEM_SIZE_B)
+IS_RISCV_FIRMWARE := RISCV
+RISCV_LOG_MEM_RES_START := $(RISCV_LOG_MEM_RESERVE_START)
+RISCV_LOG_MEM_RES_SIZE  := $(RISCV_LOG_MEM_RESERVE_SIZE)
+IS_RISCV_LOG_MEM  := RISCV_LOG_MEM
+endif
+
+ifeq ($(strip $(AX_RISCV_ISP_SUPPORT)),TRUE)
+ISP_IMAGE_RES_START :=$(ISP_IMAGE_DDR_START)
+ISP_IMAGE_RES_SIZE  :=$(ISP_IMAGE_LEN_B)
+IS_ISP_IMAGE_FIRMWARE := ISP_IMAGE
+endif
+
+ifeq ($(strip $(AXERA_SDK_RELEASE)),TRUE)
+use_prebuild_prvdrv  := yes
+endif
+
+ifeq ($(strip $(SUPPORT_OPTEE)),TRUE)
+DEF_PATCH_FILES      += $(AXERA_SCRIPT_PATH)/AX620E_optee_defconfig
+OPTEE_RES_START := $(OPTEE_IMAGE_ADDR)
+OPTEE_RES_SIZE  := $(OPTEE_RESERVED_SIZE)
+IS_TEE_FIRMWARE	:= TEE
+endif
+
+ifeq ($(debug), yes)
+DEF_PATCH_FILES      += $(AXERA_SCRIPT_PATH)/AX620E_kmemleak_defconfig
+endif
+
+ifeq ($(debugkconfig), yes)
+DEF_PATCH_FILES      += $(AXERA_SCRIPT_PATH)/AX620E_debug_defconfig
+endif
+
+ifeq ($(strip $(buildin_prvdrv)),yes)
+DEF_PATCH_FILES      += $(AXERA_SCRIPT_PATH)/AX620E_buildin_prvdrv_defconfig
+endif
+
+SIGN_SCRIPT  := $(IMGSIGN_SCRIPT)/sec_boot_AX620E_sign.py
+ifeq ($(strip $(SIGN_USE_RSA3072)),TRUE)
+PUB_KEY      := $(TOOLS_PATH)/imgsign/key_3072/pubkey.pem
+PRIV_KEY     := $(TOOLS_PATH)/imgsign/key_3072/private.pem
+SIGN_PARAMS  := -cap 0x54FEFE -key_bit 3072
+else
+PUB_KEY      := $(TOOLS_PATH)/imgsign/public.pem
+PRIV_KEY     := $(TOOLS_PATH)/imgsign/private.pem
+SIGN_PARAMS  := -cap 0x54FAFE -key_bit 2048
+endif
+
+AX_GZIP      := $(TOOLS_PATH)/ax_gzip_tool/ax_gzip
+
+#UIO_DRIVER_PATH = $(HOME_PATH)/kernel/linux/$(KERNEL_DIR)/drivers/uio
+KBUILD_OUTDIR   := $(BUILD_PATH)/out/$(PROJECT)/objs/kernel/linux/$(KERNEL_DIR)
+KBUILD_OUTKODIR := $(BUILD_PATH)/out/$(PROJECT)/objs/kernel/linux/ko
+IMAGE_OUTDIR    := $(BUILD_PATH)/out/$(PROJECT)/images
+EXT_FLAG        := O=$(KBUILD_OUTDIR)  HOME_PATH=$(HOME_PATH) PROJECT=$(PROJECT) LIBC=$(LIBC)
+PRV_DRV_PATH    := $(HOME_PATH)/kernel/osdrv/private_drv2kernel
+
+PATCH_SCRIPT     := $(BUILD_PATH)/tools/config2defconfig.py
+CONFIG_MAPS      := $(KERNEL_DIR)/arch/$(ARCH)/configs/axera_config_maps.txt
+PROJECT_MAK      := $(BUILD_PATH)/projects/$(PROJECT)/project.mak
+TEMP_DEFCONFIG   := $(KBUILD_OUTDIR)/$(PROJECT)_defconfig.tmp
+SRC_DEFCONFIG    := $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+BAK_DEFCONFIG    := $(KBUILD_OUTDIR)/$(CONFIG)
+SCRIPTS_PATH     := $(KERNEL_DIR)/scripts/axera
+GENERATED_PATH   := $(KBUILD_OUTDIR)/include/generated
+
+KERNEL_IMAGE     := $(IMAGE_OUTDIR)/boot_signed.bin
+DTB_IMAGE        := $(IMAGE_OUTDIR)/$(PROJECT)_signed.dtb
+kernel_img_size  := $(call KM2Bytes,$(KERNEL_PARTITION_SIZE))
+dtb_img_size     := $(call KM2Bytes,$(DTB_PARTITION_SIZE))
+
+default: linux
+
+all: prepare linux
+	@$(ECHO) -e $(GREEN)"\nBuild Linux success!!\n" $(DONE)
+
+prepare:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "first build prepare" $(DONE)
+	@$(MKDIR) -p $(KBUILD_OUTDIR)
+	@$(MKDIR) $(GENERATED_PATH)
+ifneq ($(DEF_PATCH_FILES),)
+	@if [ -e $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak ]; then \
+		$(CP) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG); \
+	else \
+		$(CP) $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak; \
+	fi
+	python3 $(PATCH_KCONFIG_SCRIPT) $(DEF_PATCH_FILES) $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+endif
+	@$(CP) $(SRC_DEFCONFIG) $(BAK_DEFCONFIG)
+	@python3 $(PATCH_SCRIPT) $(PROJECT) $(PROJECT_MAK) $(CONFIG_MAPS) $(SRC_DEFCONFIG) $(TEMP_DEFCONFIG)
+	@$(CP) $(TEMP_DEFCONFIG) $(SRC_DEFCONFIG)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) $(CONFIG) $(EXT_FLAG)
+	@$(CP) $(BAK_DEFCONFIG) $(SRC_DEFCONFIG)
+
+ifeq ($(strip $(use_prebuild_prvdrv)),yes)
+	@$(MKDIR) -p $(DST_PRVDRV_OBJ_PATH)
+	@$(CP) -rf $(SRC_PRVDRV_OBJ_PATH)/* $(DST_PRVDRV_OBJ_PATH)/
+else
+ifeq ($(strip $(KERNEL_BUILDIN_PRVDRV)),TRUE)
+	@bash $(SCRIPTS_PATH)/axera_drv_version.sh $(GENERATED_PATH)/ax_module_version.h axdrv $(SDK_VERSION)
+endif
+endif
+ifneq ($(DEF_PATCH_FILES),)
+	@$(CP) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+	@$(RM) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak
+endif
+
+linux: dtbs
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) Image $(EXT_FLAG)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) M=$(UIO_DRIVER_PATH) modules $(EXT_FLAG)
+menuconfig:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) menuconfig $(EXT_FLAG)
+
+savedefconfig:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) savedefconfig $(EXT_FLAG)
+
+olddefconfig:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) olddefconfig $(EXT_FLAG)
+
+dtbs:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making $@..." $(DONE)
+	@if [ -e $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)_bak ]; then \
+		$(CP) $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)_bak $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE); \
+	else \
+		$(CP) $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)_bak; \
+	fi
+ifeq ($(strip $(SUPPORT_ATF)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(ATF_RES_START) -s $(ATF_RES_SIZE) -t $(IS_ATF_FIRMWARE)
+endif
+ifeq ($(strip $(AX_RISCV_SUPPORT)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(RISCV_RES_START) -s $(RISCV_RES_SIZE) -t $(IS_RISCV_FIRMWARE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(RISCV_LOG_MEM_RES_START) -s $(RISCV_LOG_MEM_RES_SIZE) -t $(IS_RISCV_LOG_MEM)
+endif
+ifeq ($(strip $(AX_RISCV_ISP_SUPPORT)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(ISP_IMAGE_RES_START) -s $(ISP_IMAGE_RES_SIZE) -t $(IS_ISP_IMAGE_FIRMWARE)
+endif
+ifeq ($(strip $(AX_RISCV_LOAD_ROOTFS_SUPPORT)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(RAMDISK_HEADER_RES_START) -s $(RAMDISK_HEADER_RES_SIZE) -t $(IS_RAMDISK_HEADER_FIRMWARE)
+endif
+ifeq ($(strip $(AX_RISCV_LOAD_MODEL_SUPPORT)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(MODEL_DATA_RES_START) -s $(MODEL_DATA_RES_SIZE) -t $(IS_MODEL_DATA_FIRMWARE)
+endif
+ifeq ($(strip $(SUPPORT_OPTEE)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(OPTEE_RES_START) -s $(OPTEE_RES_SIZE) -t $(IS_TEE_FIRMWARE)
+endif
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -p $(SUPPORT_ATF)
+ifeq ($(strip $(SUPPORT_RAMDISK)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(KERN_RAMDISK_SADDR) -s $(RAMDISK_SIZE) -b $(RAMDISK_BOOTARGS) -t RAMDISK
+endif
+ifeq ($(strip $(SUPPORT_KERNEL_BOOTARGS)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -b $(KERNEL_BOOTARGS) -t DTB
+endif
+ifeq ($(strip $(AX630C_DDR4_RETRAIN)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(DDR_RETRAIN_START) -s $(DDR_RETRAIN_SIZE) -t DDR_RETRAIN
+endif
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -c $(CMM_POOL_PARAM) -t CMM
+ifeq ($(strip $(SUPPORT_RECYCLE_CMM)),TRUE)
+	@bash $(PATCH_RESERVE_MEM_SCRIPT) -o $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE) -a $(CMM_RECYCLE_START) -s $(CMM_RECYCLE_SIZE) -t RECYCLE_CMM
+endif
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) dtbs  $(EXT_FLAG)
+	@$(CP) $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)_bak $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)
+	@$(RM) $(DTS_RESERVE_MEM_PATH)/$(DTS_RESERVE_MEM_FILE)_bak
+
+install_dtb:
+	@$(ECHO) -e $(GREEN) "Linux $@..." $(DONE)
+	@$(MKDIR) $(IMAGE_OUTDIR)
+	@$(CP) $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/dts/axera/$(PROJECT).dtb $(IMAGE_OUTDIR)
+	@$(MKDIR) $(KBUILD_OUTKODIR)
+	@$(RM) $(KBUILD_OUTKODIR)/*
+ifeq ($(strip $(FLASH_TYPE)), nor)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/mtd/tests/mtd_speedtest.ko $(KBUILD_OUTKODIR)
+endif
+ifeq ($(strip $(AX_RISCV_LOAD_ROOTFS_SUPPORT)),TRUE)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/spi/spi-axera-module.ko $(KBUILD_OUTKODIR)
+endif
+ifeq ($(strip $(COPY_USB_KO)), TRUE)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/usb/dwc3/dwc3*.ko $(KBUILD_OUTKODIR)
+	@$(STRIP) --strip-debug $(KBUILD_OUTKODIR)/dwc3*.ko
+	@xz --lzma2=dict=2MiB -f $(KBUILD_OUTKODIR)/dwc3*.ko
+endif
+ifeq ($(strip $(COPY_DWMAC_KO)), TRUE)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/net/ethernet/stmicro/stmmac/dwmac-axera-plat.ko $(KBUILD_OUTKODIR)
+	@$(STRIP) --strip-debug $(KBUILD_OUTKODIR)/dwmac-axera-plat.ko
+	@xz --lzma2=dict=2MiB -f $(KBUILD_OUTKODIR)/dwmac-axera-plat.ko
+endif
+ifeq ($(strip $(COPY_NFS_KO)), TRUE)
+	@$(CP) $(KBUILD_OUTDIR)/fs/nfs/*.ko $(KBUILD_OUTKODIR)
+	@$(CP) $(KBUILD_OUTDIR)/fs/nfs_common/*.ko $(KBUILD_OUTKODIR)
+	@$(CP) $(KBUILD_OUTDIR)/fs/lockd/*.ko $(KBUILD_OUTKODIR)
+	@$(CP) $(KBUILD_OUTDIR)/net/sunrpc/*.ko $(KBUILD_OUTKODIR)
+	@$(STRIP) --strip-debug $(KBUILD_OUTKODIR)/*.ko
+	@xz --lzma2=dict=2MiB -f $(KBUILD_OUTKODIR)/*.ko
+endif
+ifeq ($(strip $(COPY_SD_KO)), TRUE)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/mmc/host/sdhci-axera.ko  $(KBUILD_OUTKODIR)
+	@$(STRIP) --strip-debug $(KBUILD_OUTKODIR)/sdhci-axera.ko
+	@xz --lzma2=dict=2MiB -f $(KBUILD_OUTKODIR)/sdhci-axera.ko
+endif
+ifeq ($(SUPPPORT_GZIPD), TRUE)
+	@$(AX_GZIP) -9 $(IMAGE_OUTDIR)/$(PROJECT).dtb
+	@python3 $(SIGN_SCRIPT) -i $(IMAGE_OUTDIR)/$(PROJECT).dtb.axgzip -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(DTB_IMAGE) $(SIGN_PARAMS)
+else
+	@python3 $(SIGN_SCRIPT) -i $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/dts/axera/$(PROJECT).dtb -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(DTB_IMAGE) $(SIGN_PARAMS)
+endif
+	@imgsize=$$(stat -c %s $(DTB_IMAGE));\
+	if [ $$imgsize -gt $(dtb_img_size) ]; then \
+		echo "Error: $(DTB_IMAGE) file size($$imgsize bytes) exceeds $(strip $(dtb_img_size)) bytes"; \
+		exit 1; \
+	fi
+	@$(ECHO) -e $(GREEN) "Kernel dtb compressed success" $(DONE)
+
+install: install_dtb
+	@$(ECHO) -e $(GREEN) "Linux $@..." $(DONE)
+	@$(MKDIR) $(IMAGE_OUTDIR)
+	@$(MKDIR) $(IMAGE_OUTDIR)/debug
+	$(CP) $(KBUILD_OUTDIR)/vmlinux  $(IMAGE_OUTDIR)/debug/
+	$(CP) $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/Image $(IMAGE_OUTDIR)
+ifeq ($(strip $(FLASH_TYPE)), nand)
+	@$(CP) $(KBUILD_OUTDIR)/drivers/mtd/tests/mtd_speedtest.ko  $(IMAGE_OUTDIR)/debug/
+endif
+ifeq ($(strip $(SUPPPORT_KERNEL_LZMA)), TRUE)
+	@$(RM) $(IMAGE_OUTDIR)/Image.lzma
+	@lzma -k $(IMAGE_OUTDIR)/Image
+	@python3 $(SIGN_SCRIPT) -i $(IMAGE_OUTDIR)/Image.lzma -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(KERNEL_IMAGE) $(SIGN_PARAMS)
+else
+ifeq ($(strip $(SUPPPORT_GZIPD)), TRUE)
+	@$(AX_GZIP) -9 $(IMAGE_OUTDIR)/Image
+	@python3 $(SIGN_SCRIPT) -i $(IMAGE_OUTDIR)/Image.axgzip -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(KERNEL_IMAGE) $(SIGN_PARAMS)
+else
+	@python3 $(SIGN_SCRIPT) -i $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/Image -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(KERNEL_IMAGE) $(SIGN_PARAMS)
+endif
+endif
+	@imgsize=$$(stat -c %s $(KERNEL_IMAGE));\
+	if [ $$imgsize -gt $(kernel_img_size) ]; then \
+		echo "Error: $(KERNEL_IMAGE) file size($$imgsize bytes) exceeds $(strip $(kernel_img_size)) bytes"; \
+		exit 1; \
+	fi
+	@$(ECHO) -e $(GREEN) "Kernel Image compressed success" $(DONE)
+
+install_prvdrv:
+	@$(ECHO) -e $(GREEN) "Linux $@..." $(DONE)
+	@$(MAKE) -C $(PRV_DRV_PATH) install_objs install_prvdrv=yes
+
+clean_dtb:
+	@rm -rf $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/dts/axera/*.dtb
+	@$(ECHO) -e $(GREEN) "Linux $@ done" $(DONE)
+
+clean:
+	@$(ECHO) -e $(GREEN) "Linux $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ clean  $(EXT_FLAG)
+	@$(MAKE) -C $(KERNEL_DIR)/ mrproper  $(EXT_FLAG)
+	@rm -rf $(KBUILD_OUTDIR)
+ifeq ($(strip $(use_prebuild_prvdrv)),yes)
+	@$(RM) -rf $(DST_PRVDRV_OBJ_PATH)
+else
+ifeq ($(strip $(KERNEL_BUILDIN_PRVDRV)),TRUE)
+	@$(RM) -rf $(DST_PRVDRV_OBJ_PATH)
+endif
+endif

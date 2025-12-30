@@ -1,0 +1,126 @@
+CUR_PATH		:= $(shell pwd)
+HOME_PATH		:= $(CUR_PATH)/..
+SRC_PATH		:= $(CUR_PATH)
+BASE_PATH		:= $(HOME_PATH)/msp/component
+
+ROOTFS_TARGET_PATH = $(HOME_PATH)/msp/out
+
+include $(HOME_PATH)/build/rttconfig.mak
+#output
+MOD_NAME 		:= ax_osal
+OUTPUT 			:= obj
+
+# source , OSAL
+
+#SRCS +=$(SRC_PATH)/examples/test/hwtimer_test.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_task.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_semaphore.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_mutex.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_spinlock.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_atomic.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_barrier.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_workqueue.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_waitqueue.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_timer.c
+# CMM begin
+SRCS +=$(SRC_PATH)/rtt/kernel/cmm/osal_cmm_ax.c
+SRCS +=$(SRC_PATH)/rtt/kernel/cmm/cmm_alloc.c
+
+SRCS +=$(SRC_PATH)/rtt/kernel/cmm/ax_cmm_userdev.c
+# CMM end
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_kmalloc.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_fileops.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_device.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_address.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_cache.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_interrupt.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_power.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_string.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_math.c
+SRCS +=$(SRC_PATH)/rtt/kernel/osal_debug.c
+
+
+OBJS                    := $(SRCS:%.c=$(OUTPUT)/%.o)
+
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/libcpu/arm/common
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/libcpu/arm/cortex-a
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/bsp/mc20
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/bsp/mc20/drivers
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/bsp/mc20/applications
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/finsh
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/drivers/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/drivers/include/ipc
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/utilities/ulog
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/utilities/ulog/syslog
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/dfs/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/dfs/filesystems/devfs
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/dfs/filesystems/romfs
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/dfs/filesystems/elmfat
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/utilities/ramdisk/inc
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/../component_ax/Power
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/../component_ax/debug
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/../osdrv/private_drv/chip
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/../osdrv/private_drv/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/../../osal/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/dfs/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/libc/compilers/newlib
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/drivers/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/drivers/include/drivers
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/drivers/include/ipc
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/libc/pthreads
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/components/utilities/ymodem
+
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/chip
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/include
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/include/drivers
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/include/drivers/cmd_dma
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/common
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/drivers
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/isp/drivers/cmd_dma
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/cmm
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/private_drv/pool/include
+
+CINCLUDE                += -I$(HOME_PATH)/rtos/osdrv/ext_drv/include
+
+CINCLUDE                += -I$(HOME_PATH)/msp/component/sys
+CINCLUDE                += -I$(HOME_PATH)/msp/component/common/include
+CINCLUDE                += -I$(HOME_PATH)/msp/component/common/include
+CINCLUDE                += -I$(HOME_PATH)/header/external
+
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/itest
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/Power
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/debug
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/log
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/ddr_retention
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/log2m
+CINCLUDE                += -I$(HOME_PATH)/rtos/rt-thread/..//component_ax/mem_stat
+
+
+# static lib
+LIBNAME			  := lib$(MOD_NAME).a
+STATIC_TARGET	:= $(LIBNAME)
+
+# build flags
+CFLAGS			+= $(STATIC_FLAG)
+ifeq ($(debug),yes)
+CFLAGS			+= -Wall -O0 -ggdb3
+
+else
+CFLAGS			+= -Wall -O2
+endif
+
+# dependency
+CLIB			  += lc lm
+
+# dependency libs combine to STATIC_TARGET
+
+INSTALL_TARGET	:= $(STATIC_TARGET)
+INSTALL_DIR     := $(ROOTFS_TARGET_PATH)/lib/
+
+
+# link
+LINK = $(CC)
+
+include $(HOME_PATH)/build/rttrules.mak
+

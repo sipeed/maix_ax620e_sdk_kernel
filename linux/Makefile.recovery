@@ -1,0 +1,156 @@
+HOME_PATH  := $(abspath $(shell pwd)/../..)
+BUILD_PATH := $(HOME_PATH)/build
+TOOLS_PATH := $(HOME_PATH)/tools
+
+IMGSIGN_SCRIPT   := $(BUILD_PATH)/tools/imgsign
+AES_KEY          := aes-256.key
+SIGN_USE_RSA3072 ?= FALSE
+
+include $(BUILD_PATH)/color.mk
+include $(BUILD_PATH)/config.mak
+
+.PHONY: all prepare linux dtbs install install_dtb clean clean_dtb
+.NOTPARALLEL: prepare clean install
+
+ifneq ($(MAKECMDGOALS),plist)
+ifneq ($(MAKECMDGOALS),scan)
+ifeq ($(KERNEL_DIR),)
+$(error "error: KERNEL_DIR is not set")
+endif
+endif
+endif
+
+CONFIG      := axera_$(PROJECT)_recovery_defconfig
+
+AXERA_SCRIPT_PATH       := $(KERNEL_DIR)/scripts/axera
+PATCH_KCONFIG_SCRIPT    := $(AXERA_SCRIPT_PATH)/patch_defconfig.py
+DEF_PATCH_FILES         :=
+DTS_RESERVE_MEM_FILE := AX620E_reserve_mem_define.h
+DTS_RESERVE_MEM_PATH := $(KERNEL_DIR)/include/dt-bindings/memory
+OBJ_OUT_DIR             := $(BUILD_PATH)/out/$(PROJECT)/objs
+IMAGE_OUTDIR            := $(BUILD_PATH)/out/$(PROJECT)/images
+DST_ROOTFS_RECOVERY_DIR := $(HOME_PATH)/rootfs/arm/uclibc/rootfs_recovery
+ROOTFS_RECOVERY_IMG     := $(IMAGE_OUTDIR)/rootfs_recovery.cpio.lzma
+
+ATF_RES_START := $(ATF_IMG_ADDR)
+ATF_RES_SIZE  := $(ATF_IMG_PKG_SIZE)
+PATCH_RESERVE_MEM_SCRIPT := $(AXERA_SCRIPT_PATH)/patch_reserve_mem.sh
+IS_ATF_FIRMWARE	:= ATF
+
+ifeq ($(strip $(SUPPORT_OPTEE)),TRUE)
+DEF_PATCH_FILES      += $(AXERA_SCRIPT_PATH)/AX620E_optee_defconfig
+OPTEE_RES_START := $(OPTEE_IMAGE_ADDR)
+OPTEE_RES_SIZE  := $(OPTEE_RESERVED_SIZE)
+IS_TEE_FIRMWARE	:= TEE
+endif
+
+SIGN_SCRIPT  := $(IMGSIGN_SCRIPT)/sec_boot_AX620E_sign.py
+ifeq ($(strip $(SIGN_USE_RSA3072)),TRUE)
+PUB_KEY      := $(TOOLS_PATH)/imgsign/key_3072/pubkey.pem
+PRIV_KEY     := $(TOOLS_PATH)/imgsign/key_3072/private.pem
+SIGN_PARAMS  := -cap 0x54FEFE -key_bit 3072
+else
+PUB_KEY      := $(TOOLS_PATH)/imgsign/public.pem
+PRIV_KEY     := $(TOOLS_PATH)/imgsign/private.pem
+SIGN_PARAMS  := -cap 0x54FAFE -key_bit 2048
+endif
+
+AX_GZIP      := $(TOOLS_PATH)/ax_gzip_tool/ax_gzip
+
+KBUILD_OUTDIR   := $(BUILD_PATH)/out/$(PROJECT)/objs/kernel/linux/recovery/$(KERNEL_DIR)
+IMAGE_OUTDIR    := $(BUILD_PATH)/out/$(PROJECT)/images
+EXT_FLAG        := O=$(KBUILD_OUTDIR)  HOME_PATH=$(HOME_PATH) PROJECT=$(PROJECT) LIBC=$(LIBC)
+
+PATCH_SCRIPT     := $(BUILD_PATH)/tools/config2defconfig.py
+CONFIG_MAPS      := $(KERNEL_DIR)/arch/$(ARCH)/configs/axera_config_maps.txt
+PROJECT_MAK      := $(BUILD_PATH)/projects/$(PROJECT)/project.mak
+TEMP_DEFCONFIG   := $(KBUILD_OUTDIR)/$(PROJECT)_defconfig.tmp
+SRC_DEFCONFIG    := $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+BAK_DEFCONFIG    := $(KBUILD_OUTDIR)/$(CONFIG)
+SCRIPTS_PATH     := $(KERNEL_DIR)/scripts/axera
+GENERATED_PATH   := $(KBUILD_OUTDIR)/include/generated
+SWPUDATE_PATH    := $(HOME_PATH)/third-party/swupdate/arm_uclibc
+
+RECOVOERY_IMAGE    := $(IMAGE_OUTDIR)/recovery_signed.bin
+DTB_IMAGE          := $(IMAGE_OUTDIR)/$(PROJECT)_signed.dtb
+recovery_img_size  := $(call KM2Bytes,$(RECOVERY_PARTITION_SIZE))
+dtb_img_size       := $(call KM2Bytes,$(DTB_PARTITION_SIZE))
+
+default: linux
+
+all: prepare linux
+	@$(ECHO) -e $(GREEN)"\nBuild Recovery success!!\n" $(DONE)
+
+prepare:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "First build recovery prepare" $(DONE)
+	@$(MKDIR) -p $(KBUILD_OUTDIR)
+	@$(MKDIR) $(GENERATED_PATH)
+ifneq ($(DEF_PATCH_FILES),)
+	@if [ -e $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak ]; then \
+		$(CP) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG); \
+	else \
+		$(CP) $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak; \
+	fi
+	python3 $(PATCH_KCONFIG_SCRIPT) $(DEF_PATCH_FILES) $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+endif
+	@$(CP) $(SRC_DEFCONFIG) $(BAK_DEFCONFIG)
+	@python3 $(PATCH_SCRIPT) $(PROJECT) $(PROJECT_MAK) $(CONFIG_MAPS) $(SRC_DEFCONFIG) $(TEMP_DEFCONFIG)
+	@$(CP) $(TEMP_DEFCONFIG) $(SRC_DEFCONFIG)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) $(CONFIG) $(EXT_FLAG)
+	@$(CP) $(BAK_DEFCONFIG) $(SRC_DEFCONFIG)
+
+ifneq ($(DEF_PATCH_FILES),)
+	@$(CP) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak $(KERNEL_DIR)/arch/$(ARCH)/configs/$(CONFIG)
+	@$(RM) $(AXERA_SCRIPT_PATH)/$(CONFIG)_bak
+endif
+
+linux:
+	@$(ECHO)
+	@$(ECHO) -e $(GREEN) "Making Recovery..." $(DONE)
+	@$(MKDIR) $(IMAGE_OUTDIR)
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/dev
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/mnt
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/proc
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/tmp
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/sys
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/root
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/run
+	@$(MKDIR) -p $(DST_ROOTFS_RECOVERY_DIR)/usr/lib
+	$(CP) -r $(SWPUDATE_PATH)/bin/swupdate  $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/
+	$(CP) -r $(SWPUDATE_PATH)/lib/*  $(DST_ROOTFS_RECOVERY_DIR)/usr/lib/
+	$(CP) -r $(SWPUDATE_PATH)/etc/*  $(DST_ROOTFS_RECOVERY_DIR)/etc/
+	$(CP) -r $(BUILD_PATH)/projects/$(PROJECT)/recovery/swupdate.sh  $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/
+	$(CP) -r $(BUILD_PATH)/projects/$(PROJECT)/rootfs/usr/bin/bootable-set.sh  $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/
+	$(CP) -r $(BUILD_PATH)/projects/$(PROJECT)/rootfs/etc/fw_env.config  $(DST_ROOTFS_RECOVERY_DIR)/etc/
+	@cd $(DST_ROOTFS_RECOVERY_DIR) && find . | cpio -o -H newc | lzma > $(ROOTFS_RECOVERY_IMG)
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/etc/fw_env.config
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/etc/public.pem
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/etc/swupdate.cfg
+	@$(RM) -rf $(DST_ROOTFS_RECOVERY_DIR)/usr/lib
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/swupdate
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/swupdate.sh
+	@$(RM) $(DST_ROOTFS_RECOVERY_DIR)/usr/bin/bootable-set.sh
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) Image $(EXT_FLAG)
+	@$(MAKE) -C $(KERNEL_DIR)/ ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) LOADADDR=$(AXERA_KERNEL_IMG_ADDR) zImage $(EXT_FLAG)
+
+install:
+	@$(ECHO) -e $(GREEN) "Recovery $@..." $(DONE)
+	@$(MKDIR) $(IMAGE_OUTDIR)/recovery/debug
+	$(CP) $(KBUILD_OUTDIR)/vmlinux  $(IMAGE_OUTDIR)/recovery/debug/
+	$(CP) $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/Image $(IMAGE_OUTDIR)/recovery
+	$(CP) $(KBUILD_OUTDIR)/arch/$(ARCH)/boot/zImage $(IMAGE_OUTDIR)/recovery
+	cat $(IMAGE_OUTDIR)/recovery/zImage $(IMAGE_OUTDIR)/$(PROJECT).dtb > $(IMAGE_OUTDIR)/recovery/zImage-dtb
+	@python3 $(SIGN_SCRIPT) -i $(IMAGE_OUTDIR)/recovery/zImage-dtb -pub $(PUB_KEY) -prv $(PRIV_KEY)  -o $(RECOVOERY_IMAGE) $(SIGN_PARAMS)
+	@imgsize=$$(stat -c %s $(RECOVOERY_IMAGE));\
+	if [ $$imgsize -gt $(recovery_img_size) ]; then \
+		echo "Error: $(RECOVOERY_IMAGE) file size($$imgsize bytes) exceeds $(strip $(recovery_img_size)) bytes"; \
+		exit 1; \
+	fi
+	@$(ECHO) -e $(GREEN) "Recovery Image compressed success" $(DONE)
+
+clean:
+	@$(ECHO) -e $(GREEN) "Recovery $@..." $(DONE)
+	@$(MAKE) -C $(KERNEL_DIR)/ clean  $(EXT_FLAG)
+	@$(MAKE) -C $(KERNEL_DIR)/ mrproper  $(EXT_FLAG)
+	@rm -rf $(KBUILD_OUTDIR)
