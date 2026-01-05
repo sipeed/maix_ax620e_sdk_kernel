@@ -381,7 +381,7 @@
 	no-mmc;
 	disable-wp;
 	broken-cd;
-	cdns,phy-input-delay-sd-highspeed = <2>;
+	cdns,phy-input-delay-sd-highspeed = <4>;
 	cdns,phy-input-delay-legacy = <3>;
 	cdns,phy-input-delay-sd-uhs-sdr12 = <3>;
 	cdns,phy-input-delay-sd-uhs-sdr25 = <2>;
