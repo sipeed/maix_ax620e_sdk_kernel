@@ -89,7 +89,9 @@ static char clksrc_in[8];
 static char clksrc_out[8];
 
 static struct usb_string strings_fn[] = {
-	[STR_ASSOC].s = "Source/Sink",
+	// ### SIPEED EDIT ###
+	/* [STR_ASSOC].s = DYNAMIC, */
+	// ### SIPEED EDIT END ###
 	[STR_IF_CTRL].s = "Topology Control",
 	[STR_CLKSRC_IN].s = clksrc_in,
 	[STR_CLKSRC_OUT].s = clksrc_out,
@@ -191,8 +193,8 @@ static struct uac2_input_terminal_descriptor io_in_it_desc = {
 	.bDescriptorSubtype = UAC_INPUT_TERMINAL,
 	// ### SIPEED EDIT ###
 	/* .bTerminalID = DYNAMIC */
+	/* .wTerminalType = DYNAMIC */
 	// ### SIPEED EDIT END ###
-	.wTerminalType = cpu_to_le16(UAC_INPUT_TERMINAL_UNDEFINED),
 	.bAssocTerminal = 0,
 	// ### SIPEED EDIT ###
 	/* .bCSourceID = DYNAMIC */
@@ -227,8 +229,8 @@ static struct uac2_output_terminal_descriptor io_out_ot_desc = {
 	.bDescriptorSubtype = UAC_OUTPUT_TERMINAL,
 	// ### SIPEED EDIT ###
 	/* .bTerminalID = DYNAMIC */
+	/* .wTerminalType = DYNAMIC */
 	// ### SIPEED EDIT END ###
-	.wTerminalType = cpu_to_le16(UAC_OUTPUT_TERMINAL_UNDEFINED),
 	.bAssocTerminal = 0,
 	// ### SIPEED EDIT ###
 	/* .bSourceID = DYNAMIC */
@@ -724,6 +726,11 @@ static void setup_descriptor(struct f_uac2_opts *opts)
 		iad_desc.bInterfaceCount++;
 	}
 
+	// ### SIPEED EDIT ###
+	io_in_it_desc.wTerminalType = cpu_to_le16(opts->c_terminal_type);
+	io_out_ot_desc.wTerminalType = cpu_to_le16(opts->p_terminal_type);
+	// ### SIPEED EDIT END ###
+
 	setup_headers(opts, fs_audio_desc, USB_SPEED_FULL);
 	setup_headers(opts, hs_audio_desc, USB_SPEED_HIGH);
 	setup_headers(opts, ss_audio_desc, USB_SPEED_SUPER);
@@ -778,6 +785,8 @@ afunc_bind(struct usb_configuration *cfg, struct usb_function *fn)
 	ret = afunc_validate_opts(agdev, dev);
 	if (ret)
 		return ret;
+
+	strings_fn[STR_ASSOC].s = uac2_opts->function_name;
 	// ### SIPEED EDIT END ###
 
 	us = usb_gstrings_attach(cdev, fn_strings, ARRAY_SIZE(strings_fn));
@@ -1251,6 +1260,47 @@ end:									\
 									\
 CONFIGFS_ATTR(f_uac2_opts_, name)
 
+// ### SIPEED EDIT ###
+#define UAC2_ATTRIBUTE_STRING(name)					\
+static ssize_t f_uac2_opts_##name##_show(struct config_item *item,	\
+					 char *page)			\
+{									\
+	struct f_uac2_opts *opts = to_f_uac2_opts(item);		\
+	int result;							\
+									\
+	mutex_lock(&opts->lock);					\
+	result = scnprintf(page, sizeof(opts->name), "%s", opts->name);	\
+	mutex_unlock(&opts->lock);					\
+									\
+	return result;							\
+}									\
+									\
+static ssize_t f_uac2_opts_##name##_store(struct config_item *item,	\
+					  const char *page, size_t len)	\
+{									\
+	struct f_uac2_opts *opts = to_f_uac2_opts(item);		\
+	int ret = len;							\
+									\
+	mutex_lock(&opts->lock);					\
+	if (opts->refcnt) {						\
+		ret = -EBUSY;						\
+		goto end;						\
+	}								\
+									\
+	if (len && page[len - 1] == '\n')				\
+		len--;							\
+									\
+	scnprintf(opts->name, min(sizeof(opts->name), len + 1),		\
+		  "%s", page);						\
+									\
+end:									\
+	mutex_unlock(&opts->lock);					\
+	return ret;							\
+}									\
+									\
+CONFIGFS_ATTR(f_uac2_opts_, name)
+// ### SIPEED EDIT END ###
+
 UAC2_ATTRIBUTE(p_chmask);
 UAC2_ATTRIBUTE(p_srate);
 UAC2_ATTRIBUTE(p_ssize);
@@ -1258,6 +1308,11 @@ UAC2_ATTRIBUTE(c_chmask);
 UAC2_ATTRIBUTE(c_srate);
 UAC2_ATTRIBUTE(c_ssize);
 UAC2_ATTRIBUTE(req_number);
+// ### SIPEED EDIT ###
+UAC2_ATTRIBUTE_STRING(function_name);
+UAC2_ATTRIBUTE(p_terminal_type);
+UAC2_ATTRIBUTE(c_terminal_type);
+// ### SIPEED EDIT END ###
 
 static struct configfs_attribute *f_uac2_attrs[] = {
 	&f_uac2_opts_attr_p_chmask,
@@ -1267,6 +1322,11 @@ static struct configfs_attribute *f_uac2_attrs[] = {
 	&f_uac2_opts_attr_c_srate,
 	&f_uac2_opts_attr_c_ssize,
 	&f_uac2_opts_attr_req_number,
+	// ### SIPEED EDIT ###
+	&f_uac2_opts_attr_function_name,
+	&f_uac2_opts_attr_p_terminal_type,
+	&f_uac2_opts_attr_c_terminal_type,
+	// ### SIPEED EDIT END ###
 	NULL,
 };
 
@@ -1305,6 +1365,13 @@ static struct usb_function_instance *afunc_alloc_inst(void)
 	opts->c_srate = UAC2_DEF_CSRATE;
 	opts->c_ssize = UAC2_DEF_CSSIZE;
 	opts->req_number = UAC2_DEF_REQ_NUM;
+	// ### SIPEED EDIT ###
+	snprintf(opts->function_name, sizeof(opts->function_name), "Source/Sink");
+
+	opts->p_terminal_type = UAC2_DEF_P_TERM_TYPE;
+	opts->c_terminal_type = UAC2_DEF_C_TERM_TYPE;
+	// ### SIPEED EDIT END ###
+
 	return &opts->func_inst;
 }
 
