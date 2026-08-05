@@ -47,11 +47,12 @@
 #define LT7911EXC_FW_DATA_SIZE		(LT7911EXC_FW_SIZE - 4)
 #define LT7911EXC_FW_PAGE_SIZE		32
 #define LT7911EXC_EDID_ADDR		0x60000
-#define LT7911EXC_EDID_MAX_SIZE	256
+#define LT7911EXC_EDID_BLOCK_SIZE	128
+#define LT7911EXC_EDID_MAX_SIZE	512
 
 #define LT7911_REG(page, reg)		(((page) << 8) | (reg))
 
-#define EDID_BUFFER_SIZE			256
+#define EDID_BUFFER_SIZE			LT7911EXC_EDID_MAX_SIZE
 #define LT7911D_WR_SIZE				32
 
 #define PROC_LT7911_DIR				"lt7911_info"
@@ -1439,14 +1440,16 @@ static bool lt7911_edid_checksum_valid(const u8 *edid, size_t len)
 {
 	size_t block;
 
-	if (len != 128 && len != LT7911EXC_EDID_MAX_SIZE)
+	if (len < LT7911EXC_EDID_BLOCK_SIZE ||
+	    len > LT7911EXC_EDID_MAX_SIZE ||
+	    len % LT7911EXC_EDID_BLOCK_SIZE)
 		return false;
 
-	for (block = 0; block < len; block += 128) {
+	for (block = 0; block < len; block += LT7911EXC_EDID_BLOCK_SIZE) {
 		u8 sum = 0;
 		size_t i;
 
-		for (i = 0; i < 128; i++)
+		for (i = 0; i < LT7911EXC_EDID_BLOCK_SIZE; i++)
 			sum += edid[block + i];
 
 		if (sum)
@@ -1495,7 +1498,9 @@ static ssize_t proc_video_edid_write(struct file *file,
 	if (lt7911->chip != LT7911_CHIP_LT7911EXC)
 		return -EOPNOTSUPP;
 
-	if (count != 128 && count != LT7911EXC_EDID_MAX_SIZE)
+	if (count < LT7911EXC_EDID_BLOCK_SIZE ||
+	    count > LT7911EXC_EDID_MAX_SIZE ||
+	    count % LT7911EXC_EDID_BLOCK_SIZE)
 		return -EINVAL;
 
 	if (copy_from_user(edid, user_buffer, count))
@@ -2356,7 +2361,7 @@ static struct i2c_driver lt7911_manage_driver = {
 module_i2c_driver(lt7911_manage_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.0.5");
+MODULE_VERSION("0.0.6");
 MODULE_AUTHOR("Z2Z-BuGu");
 MODULE_AUTHOR("916BGAI");
 MODULE_DESCRIPTION("NanoAgent HDMI Module Management");
