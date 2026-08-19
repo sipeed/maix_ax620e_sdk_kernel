@@ -22,6 +22,7 @@
 // ### SIPEED EDIT ###
 #define UAC2_DEF_CSRATE 48000
 #define UAC2_DEF_CSSIZE 2
+#define UAC2_DEF_CSYNC		USB_ENDPOINT_SYNC_ASYNC
 #define UAC2_DEF_REQ_NUM 6
 
 #define UAC2_DEF_P_TERM_TYPE 0x301
@@ -38,6 +39,9 @@ struct f_uac2_opts {
 	int				c_chmask;
 	int				c_srate;
 	int				c_ssize;
+	// ### SIPEED EDIT ###
+	int				c_sync;
+	// ### SIPEED EDIT END ###
 	int				req_number;
 	bool				bound;
 
