@@ -242,7 +242,7 @@
 &sd{
 	sdhci-caps-mask = <0x7 0x00200000>;
 	bus-width = <4>;
-	max-frequency = <200000000>;
+	max-frequency = <33333333>;
 	cap-sd-highspeed;
 	no-sdio;
 	no-mmc;
