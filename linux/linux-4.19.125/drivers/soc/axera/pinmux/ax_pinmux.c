@@ -9,6 +9,9 @@
 #include <linux/miscdevice.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
+// ### SIPEED EDIT ###
+#include <linux/irqflags.h>
+// ### SIPEED EDIT END ###
 
 #include "ax_pinmux.h"
 
@@ -114,11 +117,75 @@ static int ax_pin_init(struct platform_device *pdev)
 	void __iomem *dphy_rst_set = NULL;
 	void __iomem *dphy_mipi_en = NULL;
 
+	// ### SIPEED EDIT ###
+	int match_count = 0;
+	int uart3_short = 0;
+	int rx_high = 0;
+	int rx_low = 0;
+	unsigned long flags;
+	u32 val;
+	misc_info_t *info = NULL;
+	void __iomem *gpio_reg = NULL;
+	void __iomem *pin_reg = NULL;
+	// ### SIPEED EDIT END ###
+
 	if (index < 0 || index > AX620E_BOARD_MAX - 1) {
 		ret = -EFAULT;
 		goto end;
 	}
 	index = ax_pinmux_index_conv(index);
+
+	// ### SIPEED EDIT ###
+	info = (misc_info_t *)ioremap(MISC_INFO_ADDR, sizeof(misc_info_t));
+	if (info &&
+	    ((info->chip_type == 0x8 && info->board_id == 0x3 &&
+	      info->phy_board_id == 0x3) ||
+	     (info->chip_type == 0x9 && info->board_id == 0x1 &&
+	      info->phy_board_id == 0x1))) {
+		gpio_reg = ioremap(0x04801000, 0x100);
+		pin_reg = ioremap(0x02304000, 0x100);
+		if (gpio_reg && pin_reg) {
+			val = readl(gpio_reg + 0x0c);
+			val = (val | BIT(1)) & ~BIT(0);
+			writel(val, gpio_reg + 0x0c);
+			val = readl(gpio_reg + 0x10);
+			writel(val & ~BIT(1), gpio_reg + 0x10);
+
+			writel(0x00060043, pin_reg + 0x90);
+			writel(0x00060003, pin_reg + 0x84);
+
+			for (i = 0; i < 3; i++) {
+				val = readl(gpio_reg + 0x0c);
+				writel(val & ~BIT(0), gpio_reg + 0x0c);
+				udelay(10);
+				rx_low = !(readl(gpio_reg + 0x8c) & BIT(3));
+				local_irq_save(flags);
+				val = readl(gpio_reg + 0x0c);
+				writel(val | BIT(0), gpio_reg + 0x0c);
+				udelay(10);
+				rx_high = !!(readl(gpio_reg + 0x8c) & BIT(3));
+				val = readl(gpio_reg + 0x0c);
+				writel(val & ~BIT(0), gpio_reg + 0x0c);
+				local_irq_restore(flags);
+				if (rx_low && rx_high)
+					match_count++;
+				if (i < 2)
+					mdelay(30);
+			}
+			writel(0x00060043, pin_reg + 0x84);
+			writel(0x00060043, pin_reg + 0x90);
+			val = readl(gpio_reg + 0x0c);
+			writel(val & ~BIT(1), gpio_reg + 0x0c);
+			uart3_short = match_count == 3;
+		}
+	}
+	if (info)
+		iounmap((void *)info);
+	if (gpio_reg)
+		iounmap(gpio_reg);
+	if (pin_reg)
+		iounmap(pin_reg);
+	// ### SIPEED EDIT END ###
 
 	dphy_rst_set = ioremap(DPHYTX_SW_RST_SET, 0x4);
 	if (!dphy_rst_set) {
@@ -133,6 +200,13 @@ static int ax_pin_init(struct platform_device *pdev)
 		goto err_ioremap;
 	}
 	for (i = 0; i < ax620E_pinmux_tbl[index].size; i += 2) {
+		// ### SIPEED EDIT ###
+		if (uart3_short &&
+		    (ax620E_pinmux_tbl[index].data[i] == 0x02304084 ||
+		     ax620E_pinmux_tbl[index].data[i] == 0x02304090))
+			continue;
+		// ### SIPEED EDIT END ###
+
 		is_dphytx =
 		    ax620E_pinmux_tbl[index].data[i] - DPHYTX_BASE <
 		    DPHY_REG_LEN ? 1 : 0;
