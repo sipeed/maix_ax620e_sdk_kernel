@@ -9,6 +9,7 @@
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -20,6 +21,7 @@
 #include <linux/usb/video.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 
 #include <media/v4l2-dev.h>
 #include <media/v4l2-event.h>
@@ -367,6 +369,64 @@ uvc_function_get_alt(struct usb_function *f, unsigned interface)
 		return 0;
 }
 
+static void uvc_stop_work(struct work_struct *work)
+{
+	struct uvc_device *uvc = container_of(to_delayed_work(work),
+		struct uvc_device, stop_work);
+	unsigned long flags;
+	bool disconnect;
+	unsigned int complete_status;
+	int ret;
+
+	spin_lock_irqsave(&uvc->state_lock, flags);
+	if (!uvc->stop_pending && !uvc->disconnect_pending) {
+		spin_unlock_irqrestore(&uvc->state_lock, flags);
+		return;
+	}
+	uvc->state = UVC_STATE_DRAINING;
+	spin_unlock_irqrestore(&uvc->state_lock, flags);
+
+	mutex_lock(&uvc->video.mutex);
+	ret = uvcg_video_stop(&uvc->video);
+	mutex_unlock(&uvc->video.mutex);
+
+	if (ret < 0) {
+		spin_lock_irqsave(&uvc->state_lock, flags);
+		uvc->state = UVC_STATE_STOP_FAILED;
+		uvc->requests_retained = true;
+		spin_unlock_irqrestore(&uvc->state_lock, flags);
+		pr_err("UVC stop drain failed (%d), requests retained\n", ret);
+		return;
+	}
+
+	spin_lock_irqsave(&uvc->state_lock, flags);
+	disconnect = uvc->disconnect_pending;
+	complete_status = uvc->delayed_status_count;
+	uvc->stop_pending = false;
+	uvc->disconnect_pending = false;
+	uvc->requests_retained = false;
+	uvc->delayed_status_count = 0;
+	uvc->state = disconnect ? UVC_STATE_DISCONNECTED : UVC_STATE_CONNECTED;
+	spin_unlock_irqrestore(&uvc->state_lock, flags);
+
+	if (disconnect) {
+		struct v4l2_event event;
+
+		memset(&event, 0, sizeof(event));
+		event.type = UVC_EVENT_DISCONNECT;
+		v4l2_event_queue(&uvc->vdev, &event);
+	} else {
+		struct v4l2_event event;
+
+		memset(&event, 0, sizeof(event));
+		event.type = UVC_EVENT_STREAMOFF;
+		v4l2_event_queue(&uvc->vdev, &event);
+	}
+
+	while (complete_status--)
+		uvc_function_setup_continue(uvc);
+}
+
 static int
 uvc_function_set_alt(struct usb_function *f, unsigned interface, unsigned alt)
 {
@@ -414,18 +474,24 @@ uvc_function_set_alt(struct usb_function *f, unsigned interface, unsigned alt)
 	if (!opts->streaming_bulk) {
 		switch (alt) {
 		case 0:
-			if (uvc->state != UVC_STATE_STREAMING)
+			if (uvc->state == UVC_STATE_CONNECTED ||
+			    uvc->state == UVC_STATE_DISCONNECTED)
 				return 0;
 
-			if (uvc->video.ep)
-				usb_ep_disable(uvc->video.ep);
-
-			memset(&v4l2_event, 0, sizeof(v4l2_event));
-			v4l2_event.type = UVC_EVENT_STREAMOFF;
-			v4l2_event_queue(&uvc->vdev, &v4l2_event);
-
-			uvc->state = UVC_STATE_CONNECTED;
-			return 0;
+			spin_lock(&uvc->state_lock);
+			if (uvc->state == UVC_STATE_STREAMING) {
+				uvc->state = UVC_STATE_STOP_PENDING;
+				uvc->stop_pending = true;
+				uvc->delayed_status_count++;
+			} else if (uvc->state == UVC_STATE_STOP_PENDING ||
+				   uvc->state == UVC_STATE_DRAINING ||
+				   uvc->state == UVC_STATE_STOP_FAILED) {
+				uvc->delayed_status_count++;
+				uvc->stop_generation++;
+			}
+			spin_unlock(&uvc->state_lock);
+			queue_delayed_work(system_wq, &uvc->stop_work, 0);
+			return USB_GADGET_DELAYED_STATUS;
 
 		case 1:
 			if (uvc->state != UVC_STATE_CONNECTED)
@@ -477,17 +543,14 @@ uvc_function_set_alt(struct usb_function *f, unsigned interface, unsigned alt)
 			return 0;
 
 		case UVC_STATE_STREAMING:
-			if (uvc->video.ep &&
-			    uvc->video.ep->enabled) {
-				ret = usb_ep_disable(uvc->video.ep);
-				if (ret)
-					return ret;
-			}
-			memset(&v4l2_event, 0, sizeof(v4l2_event));
-			v4l2_event.type = UVC_EVENT_STREAMOFF;
-			v4l2_event_queue(&uvc->vdev, &v4l2_event);
-			uvc->state = UVC_STATE_CONNECTED;
-			return 0;
+			spin_lock(&uvc->state_lock);
+			uvc->state = UVC_STATE_STOP_PENDING;
+			uvc->stop_pending = true;
+			uvc->delayed_status_count++;
+			uvc->stop_generation++;
+			spin_unlock(&uvc->state_lock);
+			queue_delayed_work(system_wq, &uvc->stop_work, 0);
+			return USB_GADGET_DELAYED_STATUS;
 
 		default:
 			return -EINVAL;
@@ -499,17 +562,33 @@ static void
 uvc_function_disable(struct usb_function *f)
 {
 	struct uvc_device *uvc = to_uvc(f);
-	struct v4l2_event v4l2_event;
+	struct v4l2_event event;
+	bool drain;
 
 	INFO(f->config->cdev, "uvc_function_disable\n");
-
-	memset(&v4l2_event, 0, sizeof(v4l2_event));
-	v4l2_event.type = UVC_EVENT_DISCONNECT;
-	v4l2_event_queue(&uvc->vdev, &v4l2_event);
-
-	uvc->state = UVC_STATE_DISCONNECTED;
-
-	usb_ep_disable(uvc->video.ep);
+	spin_lock(&uvc->state_lock);
+	drain = uvc->state == UVC_STATE_STREAMING ||
+		uvc->state == UVC_STATE_STOP_PENDING ||
+		uvc->state == UVC_STATE_DRAINING ||
+		uvc->state == UVC_STATE_STOP_FAILED ||
+		(uvc->video.ep && uvc->video.ep->enabled);
+	if (drain) {
+		uvc->disconnect_pending = true;
+		uvc->stop_pending = true;
+		uvc->state = UVC_STATE_STOP_PENDING;
+	} else {
+		uvc->disconnect_pending = false;
+		uvc->stop_pending = false;
+		uvc->state = UVC_STATE_DISCONNECTED;
+	}
+	spin_unlock(&uvc->state_lock);
+	if (drain) {
+		queue_delayed_work(system_wq, &uvc->stop_work, 0);
+	} else {
+		memset(&event, 0, sizeof(event));
+		event.type = UVC_EVENT_DISCONNECT;
+		v4l2_event_queue(&uvc->vdev, &event);
+	}
 #ifndef CONFIG_ARCH_AXERA
 	usb_ep_disable(uvc->control_ep);
 #endif
@@ -1152,6 +1231,11 @@ static void uvc_free(struct usb_function *f)
 	struct uvc_device *uvc = to_uvc(f);
 	struct f_uvc_opts *opts = container_of(f->fi, struct f_uvc_opts,
 					       func_inst);
+	flush_delayed_work(&uvc->stop_work);
+	if (READ_ONCE(uvc->requests_retained)) {
+		pr_err("UVC function storage retained after unsafe endpoint stop\n");
+		return;
+	}
 	--opts->refcnt;
 	kfree(uvc);
 }
@@ -1162,6 +1246,11 @@ static void uvc_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct uvc_device *uvc = to_uvc(f);
 
 	INFO(cdev, "%s\n", __func__);
+	flush_delayed_work(&uvc->stop_work);
+	if (READ_ONCE(uvc->requests_retained)) {
+		pr_err("UVC unbind skipped after unsafe endpoint stop\n");
+		return;
+	}
 
 	device_remove_file(&uvc->vdev.dev, &dev_attr_function_name);
 	video_unregister_device(&uvc->vdev);
@@ -1184,6 +1273,8 @@ static struct usb_function *uvc_alloc(struct usb_function_instance *fi)
 		return ERR_PTR(-ENOMEM);
 
 	mutex_init(&uvc->video.mutex);
+	spin_lock_init(&uvc->state_lock);
+	INIT_DELAYED_WORK(&uvc->stop_work, uvc_stop_work);
 	uvc->state = UVC_STATE_DISCONNECTED;
 	opts = fi_to_f_uvc_opts(fi);
 

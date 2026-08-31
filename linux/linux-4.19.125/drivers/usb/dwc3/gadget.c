@@ -763,13 +763,16 @@ out:
 	return 0;
 }
 
-static void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
+static int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
 		bool interrupt);
-static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
+static int dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 {
 	struct dwc3_request		*req;
+	int				ret;
 
-	dwc3_stop_active_transfer(dep, true, false);
+	ret = dwc3_stop_active_transfer(dep, true, false);
+	if (ret < 0)
+		return ret;
 
 	/* - giveback all requests to gadget driver */
 	while (!list_empty(&dep->started_list)) {
@@ -789,6 +792,8 @@ static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 
 		dwc3_gadget_giveback(dep, req, -ESHUTDOWN);
 	}
+
+	return 0;
 }
 
 /**
@@ -805,10 +810,13 @@ static int __dwc3_gadget_ep_disable(struct dwc3_ep *dep)
 {
 	struct dwc3		*dwc = dep->dwc;
 	u32			reg;
+	int			ret;
 
 	trace_dwc3_gadget_ep_disable(dep);
 
-	dwc3_remove_requests(dwc, dep);
+	ret = dwc3_remove_requests(dwc, dep);
+	if (ret < 0)
+		return ret;
 
 	/* make sure HW endpoint isn't stalled */
 	if (dep->flags & DWC3_EP_STALL)
@@ -1509,7 +1517,9 @@ static int dwc3_gadget_ep_dequeue(struct usb_ep *ep,
 		}
 		if (r == req) {
 			/* wait until it is processed */
-			dwc3_stop_active_transfer(dep, true, true);
+			ret = dwc3_stop_active_transfer(dep, true, true);
+			if (ret < 0)
+				goto out0;
 
 			if (!r->trb)
 				goto out0;
@@ -2783,7 +2793,7 @@ static void dwc3_reset_gadget(struct dwc3 *dwc)
 	}
 }
 
-static void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
+static int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
 	bool interrupt)
 {
 	struct dwc3 *dwc = dep->dwc;
@@ -2793,7 +2803,7 @@ static void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
 
 	if ((dep->flags & DWC3_EP_END_TRANSFER_PENDING) ||
 	    !dep->resource_index)
-		return;
+		return 0;
 
 	/*
 	 * NOTICE: We are violating what the Databook says about the
@@ -2832,13 +2842,21 @@ static void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
 	cmd |= DWC3_DEPCMD_PARAM(dep->resource_index);
 	memset(&params, 0, sizeof(params));
 	ret = dwc3_send_gadget_ep_cmd(dep, cmd, &params);
-	WARN_ON_ONCE(ret);
+	if (ret < 0) {
+		dev_err(dwc->dev,
+			"%s: END_TRANSFER failed (%d), retaining resource %u and requests\n",
+			dep->name, ret, dep->resource_index);
+		WARN_ON_ONCE(1);
+		return ret;
+	}
 	dep->resource_index = 0;
 
 	if (dwc3_is_usb31(dwc) || dwc->revision < DWC3_REVISION_310A) {
 		dep->flags |= DWC3_EP_END_TRANSFER_PENDING;
 		udelay(100);
 	}
+
+	return 0;
 }
 
 static void dwc3_clear_stall_all_ep(struct dwc3 *dwc)
