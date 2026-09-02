@@ -27,6 +27,12 @@ static struct class *hidg_class;
 static DEFINE_IDA(hidg_ida);
 static DEFINE_MUTEX(hidg_ida_lock); /* protects access to hidg_ida */
 
+// ### SIPEED EDIT ###
+#define HIDG_FEATURE_REPORT_TYPE		3
+#define HIDG_TOUCHSCREEN_FEATURE_REPORT_ID	4
+#define HIDG_TOUCHSCREEN_MAX_CONTACTS		10
+// ### SIPEED EDIT END ###
+
 /*-------------------------------------------------------------------------*/
 /*                            HID gadget struct                            */
 
@@ -701,6 +707,18 @@ static int hidg_setup(struct usb_function *f,
 	case ((USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8
 		  | HID_REQ_GET_REPORT):
 		VDBG(cdev, "get_report\n");
+
+		if ((value >> 8) == HIDG_FEATURE_REPORT_TYPE &&
+		    (value & 0xff) == HIDG_TOUCHSCREEN_FEATURE_REPORT_ID) {
+			length = min_t(unsigned int, length, 2);
+			if (length > 0)
+				((u8 *)req->buf)[0] =
+					HIDG_TOUCHSCREEN_FEATURE_REPORT_ID;
+			if (length > 1)
+				((u8 *)req->buf)[1] =
+					HIDG_TOUCHSCREEN_MAX_CONTACTS;
+			goto respond;
+		}
 
 		/* send an empty report */
 		length = min_t(unsigned, length, hidg->report_length);
