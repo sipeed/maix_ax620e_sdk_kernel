@@ -2189,6 +2189,13 @@ u8 rwnx_rxdataind_aicwf(struct rwnx_hw *rwnx_hw, void *hostid, void *rx_priv)
         u8 rtap_len;
         u16 frm_len = 0;
 
+    #ifndef CONFIG_RWNX_MON_DATA
+        // Without MON_DATA there is no data vif to forward to, and the
+        // (status != RX_STAT_MONITOR) branch below would leave skb_monitor NULL.
+        // Treat MONITOR|FORWARD frames (e.g. auto_reply'd frames) as monitor-only.
+        status = RX_STAT_MONITOR;
+    #endif
+
         //Check if monitor interface exists and is open
         rwnx_vif = rwnx_rx_get_vif(rwnx_hw, rwnx_hw->monitor_vif);
         if (!rwnx_vif) {
