@@ -373,18 +373,38 @@
 };
 
 &ax_uart1 {
+	compatible = "snps,dw-apb-uart";
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/delete-property/ ax_clk_id;
+	/delete-property/ default_cpr_reg;
 	status = "okay";
 };
 
 &ax_uart2 {
+	compatible = "snps,dw-apb-uart";
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/delete-property/ ax_clk_id;
+	/delete-property/ default_cpr_reg;
 	status = "okay";
 };
 
 &ax_uart3 {
+	compatible = "snps,dw-apb-uart";
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/delete-property/ ax_clk_id;
+	/delete-property/ default_cpr_reg;
 	status = "okay";
 };
 
 &ax_uart4 {
+	compatible = "snps,dw-apb-uart";
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/delete-property/ ax_clk_id;
+	/delete-property/ default_cpr_reg;
 	status = "okay";
 };
 
