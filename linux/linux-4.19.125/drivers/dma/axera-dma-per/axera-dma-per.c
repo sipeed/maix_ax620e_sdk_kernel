@@ -453,11 +453,15 @@ static size_t dma_get_residue(struct axi_dma_chan *chan,
 				completed_length =
 				    len + read_chan_sar(chan) -
 				    hw_desc->lli->sar;
+				if (completed_length > desc->length)
+					completed_length = desc->length;
 				return desc->length - completed_length;
 			} else if (chan->direction == DMA_DEV_TO_MEM) {
 				completed_length =
 				    len + read_chan_dst(chan) -
 				    hw_desc->lli->dar;
+				if (completed_length > desc->length)
+					completed_length = desc->length;
 				return desc->length - completed_length;
 			}
 		}

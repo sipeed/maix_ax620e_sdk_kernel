@@ -53,7 +53,10 @@ static void __dma_rx_complete(void *param)
 	dma->rx_running = 0;
 	dmaengine_tx_status(dma->rxchan, dma->rx_cookie, &state);
 
-	count = dma->rx_size - state.residue;
+	if (state.residue > dma->rx_size)
+		count = 0;
+	else
+		count = dma->rx_size - state.residue;
 
 	tty_insert_flip_string(tty_port, dma->rx_buf, count);
 	p->port.icount.rx += count;
