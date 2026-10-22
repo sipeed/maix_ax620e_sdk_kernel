@@ -1174,7 +1174,9 @@ static int rwnx_open(struct net_device *dev)
 		 netdev_br_init(dev);
 	#endif /* CONFIG_BR_SUPPORT */
 
-	netif_carrier_off(dev);
+	// Keep carrier on for monitor vif, otherwise injected frames hit noop_qdisc
+	if (RWNX_VIF_TYPE(rwnx_vif) != NL80211_IFTYPE_MONITOR)
+		netif_carrier_off(dev);
 	netif_start_queue(dev);
 
 	return error;
@@ -3562,13 +3564,9 @@ static int rwnx_cfg80211_set_monitor_channel(struct wiphy *wiphy,
 
 	rwnx_vif = rwnx_hw->vif_table[rwnx_hw->monitor_vif];
 
-	// Do nothing if monitor interface is already configured with the requested channel
-	if (rwnx_chanctx_valid(rwnx_hw, rwnx_vif->ch_index)) {
-		struct rwnx_chanctx *ctxt;
-		ctxt = &rwnx_vif->rwnx_hw->chanctx_table[rwnx_vif->ch_index];
-		if (chandef && cfg80211_chandef_identical(&ctxt->chan_def, chandef))
-			return 0;
-	}
+	// Don't skip when the cached chanctx matches the request: after the monitor vif is
+	// re-created (iftype change) the firmware is back on its default channel while the
+	// cached chan_def still holds the old one, so skipping leaves the radio mistuned.
 
 	// Always send command to firmware. It allows to retrieve channel context index
 	// and its configuration.
